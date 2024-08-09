@@ -1,0 +1,329 @@
+#-----------------
+#at first I try with qiskit and it's functons for noise mitigation
+#-----------------
+
+"""
+#installations
+
+pip install qiskit
+pip install qiskit_ibm_runtime
+!pip install mitiq==0.39.0
+pip install qiskit_ibm_provider
+pip install qiskit-aer
+pip install classiq
+pip install ply
+"""
+
+from qiskit_ibm_runtime import Estimator
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+#define the system
+service = QiskitRuntimeService(channel="ibm_quantum", token="db12955afa2f72276949f362bb0f5166a12cbd149bf2cde3515a299d42d7367b88eb859ab8d86ca5382cb4d1c83eb65ee509d3b09afb726d7ab2ba389050d91f")
+service.backends()
+backend = service.least_busy()
+
+USE_REAL_HARDWARE = False
+
+from qiskit_ibm_provider import IBMProvider
+from qiskit_aer import Aer
+
+if IBMProvider.saved_accounts() and USE_REAL_HARDWARE:
+    provider = IBMProvider()
+    backend = provider.get_backend("ibm_osaka")
+else:
+    # Default to a simulator.
+    backend = Aer.get_backend("qasm_simulator"),
+
+
+
+
+from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
+from qiskit.synthesis import SuzukiTrotter
+from qiskit.quantum_info import SparsePauliOp, Pauli
+from qiskit.circuit.library import PauliEvolutionGate
+# Step1:
+#pauli terms representing the specified Hamiltonian of 5 spins
+pauli_terms = [
+    ('ZZIII', 1.0),  # ZZ interaction (J_ij sigma_z^i sigma_z^j)
+    ('IIXXI', 1.0),  # XX interaction (K_ij sigma_x^i sigma_x^j)
+    ('IXIII', 0.5),  # X field (g_i sigma_x^i)
+    ('IIZII', 0.5)   # Z field (h sigma_z^i)
+]
+
+#pauli terms to SparsePauliOps
+pauli_ops = [SparsePauliOp(Pauli(term), [coef]) for term, coef in pauli_terms]
+
+#sum all PauliOps to create the Hamiltonian
+hamiltonian = sum(pauli_ops)
+
+# Step 2:define the PauliEvolutionGate
+evolution_gate = PauliEvolutionGate(hamiltonian, time=1.0)
+
+# Step 3:define Suzuki-Trotter parameters
+order = 2  # Second order decomposition for higher accuracy
+reps = 3   # Number of Trotter steps
+
+# Step 4:Suzuki-Trotter
+suzuki_trotter = SuzukiTrotter(order=order, reps=reps)
+
+# Step 5:generate a quantum circuit from Suzuki-Trotter 
+n_qubits = 5 
+qc = QuantumCircuit(n_qubits)
+suzuki_trotter_circuit = suzuki_trotter.synthesize(evolution_gate)
+qc.append(suzuki_trotter_circuit, range(n_qubits))
+qc.barrier()
+
+# ------------------------------------------------------------------
+# Create Qiskit Circuit with measurement
+# ------------------------------------------------------------------
+qreg_meas = QuantumRegister(n_qubits)
+creg_meas = ClassicalRegister(n_qubits)
+circuit_with_meas = QuantumCircuit(qreg_meas, creg_meas)
+circuit_with_meas.append(suzuki_trotter_circuit, range(n_qubits))
+circuit_with_meas.measure(qreg_meas, creg_meas)
+
+print("---------------------------------------------")
+print("IBM \"circuit\" with measurement")
+print("---------------------------------------------")
+print(circuit_with_meas)
+#decomposed_circuit = circuit_with_meas.decompose()
+#print(decomposed_circuit)
+
+# ------------------------------------------------------------------
+# Create Qiskit Circuit without measurement
+# ------------------------------------------------------------------
+qreg_no_meas = QuantumRegister(n_qubits)
+circuit_no_meas = QuantumCircuit(qreg_no_meas)
+circuit_no_meas.append(suzuki_trotter_circuit, range(n_qubits))
+
+print("---------------------------------------------")
+print("IBM \"circuit\", no measurement")
+print("---------------------------------------------")
+print(circuit_no_meas)
+
+#------------------------
+#define IBM executor
+from qiskit import transpile
+from qiskit.primitives import BackendSampler
+from qiskit_aer.noise import NoiseModel
+from qiskit_aer import Aer
+
+#noise_model = NoiseModel.from_backend(backend)
+
+#assuming these are defined elsewhere in your code:
+USE_REAL_HARDWARE = False  # Set to True if running on actual quantum hardware
+backend = Aer.get_backend("qasm_simulator")  # Replace with actual backend if using real hardware
+
+def initialized_depolarizing_noise(noise_level: float) -> NoiseModel:
+    """Initialize a depolarizing noise model with the given noise level."""
+    # This is a placeholder for your noise model initialization code
+    noise_model = NoiseModel()
+    # Add noise to the noise_model based on noise_level
+    return noise_model
+
+def ibmq_executor(circuit: QuantumCircuit, shots: int = 8192) -> float:
+    """Returns the expectation value to be mitigated.
+
+    Args:
+        circuit: Circuit to run.
+        shots: Number of times to execute the circuit to compute the expectation value.
+    """
+    if USE_REAL_HARDWARE:
+        # Transpile the circuit for the hardware backend
+        transpiled_circuit = transpile(circuit, backend=backend, optimization_level=0)
+        job = backend.run(transpiled_circuit, shots=shots)
+    else:
+        # Simulate the circuit with noise
+        noise_model = initialized_depolarizing_noise(noise_level=0.02)
+        transpiled_circuit = transpile(circuit, backend=backend, optimization_level=0)
+        job = backend.run(transpiled_circuit, noise_model=noise_model, shots=shots)
+
+    # Wait for the job to complete and get the result
+    result = job.result()
+    counts = result.get_counts()
+
+    print(counts)  # For debugging purposes
+
+    #convert from raw measurement counts to the expectation value
+    if counts.get("0") is None:
+        expectation_value = 0.0
+    else:
+        expectation_value = counts.get("0") / shots
+
+    return expectation_value
+
+#--------------------------
+from mitiq import zne
+from mitiq.interface.mitiq_qiskit.qiskit_utils import initialized_depolarizing_noise
+
+#print("================================================================")
+#print(circuit)
+#print("===============================================================")
+
+# -------------------------------------------------
+# Execute unmitigated circuit using ibmq_executor
+# -------------------------------------------------
+print("---------------------------------------------")
+print("ibmq_executor")
+print("---------------------------------------------")
+unmitigated_ibm = ibmq_executor(circuit_with_meas)
+print(f"\nUnmitigated result IBMQ: {unmitigated_ibm:.3f}\n")
+
+mitigated_ibm = zne.execute_with_zne(circuit_with_meas, ibmq_executor)
+print(f"\nMitigated result IBMQ: {mitigated_ibm:.3f}\n")
+
+
+#---------------------------------
+# Trancfer the qiskit circuit to Classiq
+import classiq
+classiq.authenticate()
+
+
+# get circuit corotine
+async def getCircuit(QASM_string):
+    circuit = ApiWrapper.get_generated_circuit_from_qasm(QasmCode(code=QASM_string))
+    return circuit
+
+def classiq_executor_apiwrapper_1(circuit, shots: int = 512, noise_level: int = 0.01):
+    async def classiq_executor_apiwrapper_2(circuit, shots: int = 512, noise_level: int = 0.01):
+        return await classiq_executor_apiwrapper(circuit, shots, noise_level)
+    return asyncio.run(classiq_executor_apiwrapper_2(circuit, shots, noise_level))
+
+# main coroutine
+async def classiq_executor_apiwrapper(circuit, shots: int = 8192, noise_level: int = 0.01) -> float:
+    QASM_string = circuit.qasm()
+
+    try:
+        circuit = await getCircuit(QASM_string)
+        serialized_program = circuit.json(indent=2)
+        serialized_program_json = json.loads(serialized_program)
+        serialized_program_json['model']['execution_preferences']['num_shots'] = shots
+        serialized_program_json['model']['execution_preferences']['noise_properties'] = {'measurement_bit_flip_probability': noise_level}
+
+        job = execute(json.dumps(serialized_program_json))
+        results = job.result()
+        res = results[0].value
+        all_qubit_counts = res.counts
+
+        if all_qubit_counts.get("0", 0) == 0:
+            expectation_value = 0.
+        else:
+            expectation_value = all_qubit_counts["0"] / shots
+        return expectation_value
+
+    except Exception as e:
+        print("Error in classiq_executor_apiwrapper: ", e)
+
+async def main(circuit_with_meas):
+    num_shots = 1024 * 10
+    noise_level = 0.01
+
+    print("----------------------------------")
+    print("classiq_executor_apiwrapper")
+    print("----------------------------------")
+    unmitigated_classiq = await classiq_executor_apiwrapper(circuit_with_meas, num_shots, noise_level)
+
+    print(f"\nUnmitigated result classiq (ApiWrapper): {unmitigated_classiq:.3f}\n")
+
+    mitigated = zne.execute_with_zne(circuit_with_meas, lambda circuit_no_meas: classiq_executor_apiwrapper_1(circuit_no_meas, num_shots, noise_level))
+
+    print(f"\nMitigated result classiq (ApiWrapper): {mitigated:.3f}\n")
+
+# Call main with the circuit
+asyncio.run(main(circuit_with_meas))
+"""
+it doesn't answer, no way. we will define our hamiltonian by Classiq
+"""
+
+#--------------------------
+
+import asyncio
+from classiq.execution import ExecutionPreferences
+
+from classiq import (
+    CReal, Output, Pauli, PauliTerm, QArray, QBit, CArray, 
+    allocate, create_model, qfunc, suzuki_trotter, write_qmod, execute_async
+)
+from mitiq import zne
+
+# Define the main quantum function
+@qfunc
+def main(params_list: CArray[CReal], qba: Output[QArray[QBit]]):
+    allocate(6, qba)
+
+    # Define the Pauli terms representing your Hamiltonian
+    pauli_terms = [
+        PauliTerm(pauli=[Pauli.Z, Pauli.Z, Pauli.I, Pauli.I, Pauli.I, Pauli.I], coefficient=0.5),
+        PauliTerm(pauli=[Pauli.X, Pauli.X, Pauli.I, Pauli.I, Pauli.I, Pauli.I], coefficient=-0.3),
+        PauliTerm(pauli=[Pauli.X, Pauli.I, Pauli.I, Pauli.I, Pauli.I, Pauli.I], coefficient=1.2),
+        PauliTerm(pauli=[Pauli.Z, Pauli.I, Pauli.I, Pauli.I, Pauli.I, Pauli.I], coefficient=-0.7),
+    ]
+
+    # apply Suzuki-Trotter evolution
+    suzuki_trotter(
+        pauli_operator=pauli_terms,
+        evolution_coefficient=params_list[0],
+        order=1,
+        repetitions=2,
+        qbv=qba
+    )
+
+# create the model object directly
+qmod = create_model(main)
+
+# write the model to a file (optional)
+write_qmod(qmod, "suzuki_trotter_example")
+
+#synthesize the model to create a QuantumProgram
+qprog = synthesize(qmod)  # Synthesize directly from the model object
+
+#define the classiq_executor_model function
+def classiq_executor_model(model, shots: int = 1024*10, noise_level: float = 0.01) -> float:
+    try:
+        # set up noise and execution preferences
+        noise_preferences = NoiseProperties(measurement_bit_flip_probability=noise_level)
+        execution_preferences = ExecutionPreferences(num_shots=shots, noise_properties=noise_preferences)
+        
+        # attach execution preferences to the model
+        model.execution_preferences = execution_preferences
+        
+        # execute the model asynchronously
+        result = asyncio.run(execute_async(model))
+        
+        # access the results
+        res = result[0].value
+        all_qubit_counts = res.counts
+
+        # compute the expectation value
+        if all_qubit_counts.get("0") == 0:
+            expectation_value = 0.0
+        else:
+            expectation_value = all_qubit_counts["0"] / shots
+
+        return expectation_value
+
+    except Exception as e:
+        print("Error in classiq_executor_model: ", e)
+        return 0.0
+
+# function to execute the model and apply ZNE
+async def execute_model_and_apply_zne():
+    params_list = [1.0]  # Example parameter for evolution coefficient
+    shots = 1024  # Number of shots for the execution
+
+    # execute the model asynchronously
+    job = await execute_async(qprog)  # Pass the synthesized quantum program
+    results = await job.result()
+
+    # unmitigated output
+    unmitigated_result = results.get_counts()
+    print(f"Unmitigated result: {unmitigated_result}")
+
+    # apply ZNE using the classiq_executor_model
+    mitigated_result = zne.execute_with_zne(lambda: classiq_executor_model(qprog))
+    print(f"Mitigated result: {mitigated_result:.3f}")
+
+# run the main execution
+asyncio.run(execute_model_and_apply_zne())
+
+
