@@ -1,0 +1,99 @@
+"""
+......
+ZNE
+......
+"""
+
+#ZNE:
+# I didn't used Mitiq library to implement ZNE and I just coded the theory of it 
+
+import pennylane as qml
+from pennylane import numpy as np
+
+num_wires = 6
+dev = qml.device("default.qubit", wires=num_wires)
+
+
+# define the circuit with noise amplification (ZNE)
+def trotterized_evolution(params, scale_factor=1.0):
+    for i in range(num_wires):
+        qml.RX(params[i] * scale_factor, wires=i)
+    qml.ApproxTimeEvolution(H, 1.0 * scale_factor, 2)
+
+@qml.qnode(dev)
+def zne_circuit(params, scale_factor):
+    trotterized_evolution(params, scale_factor)
+    return [qml.expval(qml.PauliZ(i)) for i in range(num_wires)]
+
+# ZNE process
+scales = [1.0, 2.0, 3.0]  # Control noise by different scaling factors
+results = [zne_circuit(params, scale) for scale in scales]
+results = np.array(results)
+
+# extrapolate to zero noise (Linear extrapolation)
+zne_result = 3 * results[0] - 3 * results[1] + results[2]
+
+print(f"Zero-Noise Extrapolated Result: {zne_result}")
+
+"""
+the results are not that close to the actual measurements. it shows that ZNE gives only an estimation of errors and doesn't mitigate them perfectly.
+"""
+
+
+"""
+......
+PEC
+......
+"""
+#PEC:
+
+import pennylane as qml
+from pennylane import numpy as np
+
+num_wires = 6
+dev = qml.device("default.qubit", wires=num_wires)
+
+#Hamiltonian and Trotterized Evolution
+def trotterized_evolution(params):
+    for i in range(num_wires):
+        qml.RX(params[i], wires=i)
+    qml.ApproxTimeEvolution(H, 1.0, 2)
+
+@qml.qnode(dev)
+def ideal_circuit(params):
+    trotterized_evolution(params)
+    return [qml.expval(qml.PauliZ(i)) for i in range(num_wires)]
+
+#define a noise model
+def apply_noise(params, noise_level):
+    return params + noise_level * np.random.normal(size=params.shape)
+
+def noisy_circuit(params, noise_level):
+    noisy_params = apply_noise(params, noise_level)
+    return ideal_circuit(noisy_params)
+
+# execute PEC manually
+def execute_pec(noise_levels, num_trials):
+    results = []
+    for noise_level in noise_levels:
+        trial_results = []
+        for _ in range(num_trials):
+            result = noisy_circuit(params, noise_level)
+            # convert Pennylane results to numpy arrays
+            result_np = np.array([float(x) for x in result])
+            trial_results.append(result_np)
+        avg_result = np.mean(trial_results, axis=0)
+        results.append(avg_result)
+    return np.mean(results, axis=0)
+
+#parameters
+params = np.random.random(num_wires)
+noise_levels = [0.01, 0.05, 0.1]
+
+#execute
+pec_results = execute_pec(noise_levels, num_trials=10)
+print(f"Manual PEC Results: {pec_results}")
+
+
+
+
