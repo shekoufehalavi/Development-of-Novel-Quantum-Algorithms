@@ -1,0 +1,36 @@
+# define toy problem byusing PennyLane
+
+pip install pennylane
+
+#STEP1: TOY PROBLEM
+#1)encoding the problem: define a simple H and define initial states
+#2)add gates like Rx and ZZ and... , Trotterization
+#3)measure qubits and interpret results as an observable like energy ,...
+
+import pennylane as qml
+from pennylane import numpy as np
+
+#define the device
+dev = qml.device("default.qubit", wires=2)
+
+#define a simple Hamiltonian
+coeffs = [1.0, -1.0]
+obs = [qml.PauliZ(0) @ qml.PauliZ(1), qml.PauliX(0)]
+H = qml.Hamiltonian(coeffs, obs)  #1) encoding the problem
+
+#2):
+#define a quantum node for the Trotterized evolution
+@qml.qnode(dev)
+def circuit(params):
+    qml.RX(params[0], wires=0)
+    qml.RX(params[1], wires=1)
+    qml.ApproxTimeEvolution(H, 1.0, 1)
+    return qml.expval(qml.PauliZ(0)), qml.expval(qml.PauliZ(1))
+
+#3):
+#example parameters
+params = np.array([0.54, 0.12])
+
+#execute the circuit
+result = circuit(params)
+print(f"Measurement results: {result}")
