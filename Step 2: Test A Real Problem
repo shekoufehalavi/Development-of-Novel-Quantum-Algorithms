@@ -1,0 +1,115 @@
+#STEP2: A REAL PROBLEM!
+#1) implementing actual H: increase complexity of circuit
+#2)resource estimation(circuit depth,width,number of gates)
+
+#a complicated Hamiltonian from the article https://arxiv.org/abs/1909.11887
+
+import pennylane as qml
+from pennylane import numpy as np
+
+# Set up the parameters for 6 qubits
+num_wires = 6
+dev = qml.device("default.qubit", wires=num_wires)
+
+# Define Hamiltonian coefficients and observables
+J = np.random.rand(num_wires, num_wires)  # Random symmetric matrix for J
+K = np.random.rand(num_wires, num_wires)  # Random symmetric matrix for K
+g = np.random.rand(num_wires)
+h = np.random.rand()
+
+coeffs = []
+obs = []
+
+# Constructing the Hamiltonian from J, K, g, h
+for i in range(num_wires):
+    for j in range(num_wires):
+        if i != j:
+            coeffs.append(J[i, j])
+            obs.append(qml.PauliZ(i) @ qml.PauliZ(j))
+            coeffs.append(K[i, j])
+            obs.append(qml.PauliX(i) @ qml.PauliX(j))
+
+for i in range(num_wires):
+    coeffs.append(g[i])
+    obs.append(qml.PauliX(i))
+    coeffs.append(h)
+    obs.append(qml.PauliZ(i))
+
+H = qml.Hamiltonian(coeffs, obs)
+
+# Define the quantum circuit for Trotterized evolution
+@qml.qnode(dev)
+def complex_circuit(params):
+    # Apply RX rotation on each wire
+    for i in range(num_wires):
+        qml.RX(params[i], wires=i)
+
+    # Trotterized evolution of the Hamiltonian H
+    qml.ApproxTimeEvolution(H, 1.0, 2)
+
+    # Return the expectation values of the Pauli-Z operators
+    return [qml.expval(qml.PauliZ(i)) for i in range(num_wires)]
+
+# Example parameters for the circuit
+params = np.random.random(num_wires)
+
+# Execute the circuit to build the tape
+result = complex_circuit(params)
+
+# Measurement results
+measurement_results = result
+
+# Extract the operations and draw the circuit
+drawer = qml.draw(complex_circuit, device=dev)
+circuit_diagram = drawer(params)
+
+# Access the tape operations
+pennylane_tape = complex_circuit.tape
+pennylane_operations = pennylane_tape.operations
+
+# Initialize variables for depth and gate count
+circuit_depth = 0
+depths = {wire: 0 for wire in range(num_wires)}
+gate_count = {'single_qubit': 0, 'two_qubit': 0}
+
+# Calculate circuit depth and count gates
+for op in pennylane_operations:
+    if len(op.wires) == 1:
+        gate_count['single_qubit'] += 1
+    elif len(op.wires) == 2:
+        gate_count['two_qubit'] += 1
+
+    # Update depth for each wire
+    max_depth = max(depths[wire] for wire in op.wires)
+    for wire in op.wires:
+        depths[wire] = max_depth + 1
+
+circuit_depth = max(depths.values())
+
+# Calculate circuit width
+circuit_width = len(dev.wires)
+
+# Total number of gates
+total_gates = gate_count['single_qubit'] + gate_count['two_qubit']
+
+# Organize results with labels
+results = {
+    "Circuit Depth": circuit_depth,
+    "Circuit Width": circuit_width,
+    "Number of Two-Qubit Gates": gate_count['two_qubit'],
+    "Total Number of Gates": total_gates,
+    "Measurement Results": measurement_results,
+    "Circuit Diagram": circuit_diagram
+}
+
+# Print results in a clear format
+print("Results:\n")
+print(f"Circuit Depth: {results['Circuit Depth']}")
+print(f"Circuit Width: {results['Circuit Width']}")
+print(f"Number of Two-Qubit Gates: {results['Number of Two-Qubit Gates']}")
+print(f"Total Number of Gates: {results['Total Number of Gates']}")
+print("\nMeasurement Results:")
+for i, result in enumerate(results['Measurement Results']):
+    print(f"  Qubit {i}: {result}")
+print("\nCircuit Diagram:\n")
+print(results['Circuit Diagram'])
